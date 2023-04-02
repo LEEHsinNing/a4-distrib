@@ -19,7 +19,9 @@ from utils import *
 class LetterCountingExample(object):
     def __init__(self, input: str, output: np.array, vocab_index: Indexer):
         self.input = input
-        self.input_indexed = np.array([vocab_index.index_of(ci) for ci in input])
+        self.size = len(vocab_index)
+        self.input_indexed = np.array(
+            [vocab_index.index_of(ci) for ci in input])
         self.input_tensor = torch.LongTensor(self.input_indexed)
         self.output = output
         self.output_tensor = torch.LongTensor(self.output)
@@ -39,16 +41,28 @@ class Transformer(nn.Module):
         :param num_layers: number of TransformerLayers to use; can be whatever you want
         """
         super().__init__()
-        raise Exception("Implement me")
+        self.emb = nn.Embedding(vocab_size, d_model)
+        self.pos = PositionalEncoding(d_model)
+        self.layers = nn.ModuleList([
+            TransformerLayer(d_model, d_internal) for _ in range(num_layers)
+        ])
+        self.output = nn.Linear(d_model, num_classes)
+        self.logsoftmax = nn.LogSoftmax(dim = -1)
 
     def forward(self, indices):
         """
-
         :param indices: list of input indices
         :return: A tuple of the softmax log probabilities (should be a 20x3 matrix) and a list of the attention
         maps you use in your layers (can be variable length, but each should be a 20x20 matrix)
         """
-        raise Exception("Implement me")
+        src = self.emb(indices)
+        src = self.pos(src)
+        list_map = []
+        for layer in self.layers:
+            src, attention_map = layer(src)
+            list_map.append(attention_map)
+
+        return self.logsoftmax(self.output(src)), list_map  # 32x10x512
 
 
 # Your implementation of the Transformer layer goes here. It should take vectors and return the same number of vectors
@@ -62,15 +76,42 @@ class TransformerLayer(nn.Module):
         should both be of this length.
         """
         super().__init__()
-        raise Exception("Implement me")
+        self.query = nn.Linear(d_model, d_internal)
+        self.key = nn.Linear(d_model, d_internal)
+        self.value = nn.Linear(d_model, d_model)
+
+        self.forwardlayers = nn.Sequential(
+            nn.Linear(d_model, d_internal),
+            nn.ReLU(),
+            nn.Linear(d_internal, d_model)
+        )
 
     def forward(self, input_vecs):
-        raise Exception("Implement me")
+        queries = self.query(input_vecs)
+        keys = self.key(input_vecs)
+        values = self.value(input_vecs)
+
+        # attention score
+        scores = torch.matmul(queries, keys.transpose(0, 1))
+        # scale = keys.size(-1)**0.5
+
+        attention_weights = torch.softmax(scores, dim=-1)
+        attention_map = torch.matmul(attention_weights, values)
+
+        # Add the output of the self-attention layer to the input tensor
+        output = attention_map + input_vecs
+
+        # feed forward
+        intermediate_output = self.forwardlayers(output)
+        # final residual connection
+        output = output + intermediate_output
+
+        return output, attention_map
 
 
 # Implementation of positional encoding that you can use in your network
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model: int, num_positions: int=20, batched=False):
+    def __init__(self, d_model: int, num_positions: int = 20, batched=False):
         """
         :param d_model: dimensionality of the embedding layer to your model; since the position encodings are being
         added to character encodings, these need to match (and will match the dimension of the subsequent Transformer
@@ -91,7 +132,8 @@ class PositionalEncoding(nn.Module):
         """
         # Second-to-last dimension will always be sequence length
         input_size = x.shape[-2]
-        indices_to_embed = torch.tensor(np.asarray(range(0, input_size))).type(torch.LongTensor)
+        indices_to_embed = torch.tensor(np.asarray(
+            range(0, input_size))).type(torch.LongTensor)
         if self.batched:
             # Use unsqueeze to form a [1, seq len, embedding dim] tensor -- broadcasting will ensure that this
             # gets added correctly across the batch
@@ -103,16 +145,21 @@ class PositionalEncoding(nn.Module):
 
 # This is a skeleton for train_classifier: you can implement this however you want
 def train_classifier(args, train, dev):
-    raise Exception("Not fully implemented yet")
-
     # The following code DOES NOT WORK but can be a starting point for your implementation
     # Some suggested snippets to use:
-    model = Transformer(...)
+    vocab_size = train[0].size
+    num_positions = 20
+    d_model = num_positions
+    d_internal = d_model*4
+    num_classes = 3
+    num_layers = 2
+
+    model = Transformer(vocab_size, num_positions, d_model, d_internal, num_classes, num_layers)
     model.zero_grad()
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
-    num_epochs = 10
+    num_epochs = 9
     for t in range(0, num_epochs):
         loss_this_epoch = 0.0
         random.seed(t)
@@ -121,11 +168,13 @@ def train_classifier(args, train, dev):
         random.shuffle(ex_idxs)
         loss_fcn = nn.NLLLoss()
         for ex_idx in ex_idxs:
-            loss = loss_fcn(...) # TODO: Run forward and compute loss
-            # model.zero_grad()
-            # loss.backward()
-            # optimizer.step()
+            model.zero_grad()
+            probs, list_map = model.forward(train[ex_idx].input_tensor)
+            loss = loss_fcn(probs, train[ex_idx].output_tensor)  # TODO: Run forward and compute loss
+            loss.backward()
+            optimizer.step()
             loss_this_epoch += loss.item()
+        print("Total loss: ", loss_this_epoch)
     model.eval()
     return model
 
@@ -145,7 +194,8 @@ def decode(model: Transformer, dev_examples: List[LetterCountingExample], do_pri
     num_correct = 0
     num_total = 0
     if len(dev_examples) > 100:
-        print("Decoding on a large number of examples (%i); not printing or plotting" % len(dev_examples))
+        print("Decoding on a large number of examples (%i); not printing or plotting" % len(
+            dev_examples))
         do_print = False
         do_plot_attn = False
     for i in range(0, len(dev_examples)):
@@ -160,13 +210,16 @@ def decode(model: Transformer, dev_examples: List[LetterCountingExample], do_pri
             for j in range(0, len(attn_maps)):
                 attn_map = attn_maps[j]
                 fig, ax = plt.subplots()
-                im = ax.imshow(attn_map.detach().numpy(), cmap='hot', interpolation='nearest')
+                im = ax.imshow(attn_map.detach().numpy(),
+                               cmap='hot', interpolation='nearest')
                 ax.set_xticks(np.arange(len(ex.input)), labels=ex.input)
                 ax.set_yticks(np.arange(len(ex.input)), labels=ex.input)
                 ax.xaxis.tick_top()
                 # plt.show()
                 plt.savefig("plots/%i_attns%i.png" % (i, j))
-        acc = sum([predictions[i] == ex.output[i] for i in range(0, len(predictions))])
+        acc = sum([predictions[i] == ex.output[i]
+                  for i in range(0, len(predictions))])
         num_correct += acc
         num_total += len(predictions)
-    print("Accuracy: %i / %i = %f" % (num_correct, num_total, float(num_correct) / num_total))
+    print("Accuracy: %i / %i = %f" %
+          (num_correct, num_total, float(num_correct) / num_total))
