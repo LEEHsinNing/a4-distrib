@@ -174,7 +174,7 @@ def train_classifier(args, train, dev):
             loss.backward()
             optimizer.step()
             loss_this_epoch += loss.item()
-        print("Total loss: ", loss_this_epoch)
+        print("Epoch:", t, ", Total loss:", loss_this_epoch)
     model.eval()
     return model
 
