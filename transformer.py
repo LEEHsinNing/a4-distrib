@@ -106,7 +106,7 @@ class TransformerLayer(nn.Module):
         # final residual connection
         output = output + intermediate_output
 
-        return output, attention_map
+        return output, attention_weights
 
 
 # Implementation of positional encoding that you can use in your network
